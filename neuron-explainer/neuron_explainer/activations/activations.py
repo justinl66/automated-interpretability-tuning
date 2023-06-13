@@ -218,19 +218,38 @@ def neuron_exists(
     return bf.exists(file)
 
 
+# def load_neuron(
+#     layer_index: Union[str, int], neuron_index: Union[str, int],
+#     dataset_path: str = "az://openaipublic/neuron-explainer/data/collated-activations",
+# ) -> NeuronRecord:
+#     """Load the NeuronRecord for the specified neuron."""
+#     file = bf.join(dataset_path, str(layer_index), f"{neuron_index}.json")
+#     with bf.BlobFile(file, "r") as f:
+#         neuron_record = loads(f.read())
+#         if not isinstance(neuron_record, NeuronRecord):
+#             raise ValueError(
+#                 f"Stored data incompatible with current version of NeuronRecord dataclass."
+#             )
+#         return neuron_record
+
+
+import requests
+import json
+
 def load_neuron(
     layer_index: Union[str, int], neuron_index: Union[str, int],
-    dataset_path: str = "az://openaipublic/neuron-explainer/data/collated-activations",
+    dataset_path: str = "https://openaipublic.blob.core.windows.net/neuron-explainer/data/collated-activations/{}/{}.json",
 ) -> NeuronRecord:
-    """Load the NeuronRecord for the specified neuron."""
-    file = bf.join(dataset_path, str(layer_index), f"{neuron_index}.json")
-    with bf.BlobFile(file, "r") as f:
-        neuron_record = loads(f.read())
-        if not isinstance(neuron_record, NeuronRecord):
-            raise ValueError(
-                f"Stored data incompatible with current version of NeuronRecord dataclass."
-            )
-        return neuron_record
+    
+    url = dataset_path.format(layer_index, neuron_index)
+    # Send an HTTP GET request to the URL
+    response = requests.get(url)
+    neuron_record = loads(response.content)
+    if not isinstance(neuron_record, NeuronRecord):
+        raise ValueError(
+            f"Stored data incompatible with current version of NeuronRecord dataclass."
+        )
+    return neuron_record
 
 
 @bbb.ensure_session

@@ -128,3 +128,79 @@ def non_zero_activation_proportion(
         [len([x for x in activations if x != 0]) for activations in normalized_activations]
     )
     return non_zero_activations_count / total_activations_count
+
+
+def summarize_activation_records(
+    activation_records: Sequence[ActivationRecord],
+    cutoff: float
+) -> str:
+    """Format a list of activation records into a string."""
+    return (
+        "\n<start>\n"
+        + "\n<end>\n<start>\n".join(
+            [
+                _summarize_activation_record(
+                    activation_record,
+                    cutoff = cutoff,
+                    index = i,
+                )
+                for i, activation_record in enumerate(activation_records)
+            ]
+        )
+        + "\n<end>\n"
+    )
+
+def _summarize_activation_record(
+    activation_record: ActivationRecord,
+    cutoff: float,
+    index: int
+) -> str:
+    """Format neuron activations into a string, suitable for use in prompts."""
+    sample = activation_record
+    out = ""
+    out += "{} - Text excerpt:\n".format(index)
+    out += "".join(sample.tokens)
+    out += "\n"
+    out += "Highly activating tokens:\n"
+    high_tokens = []
+    for j, activation in enumerate(sample.activations):
+        if activation > cutoff:
+            high_tokens.append(sample.tokens[j])
+    out += ", ".join(high_tokens)
+    return out + "\n"
+
+def highlight_activation_records(
+    activation_records: Sequence[ActivationRecord],
+    cutoff: float
+) -> str:
+    """Format a list of activation records into a string."""
+    return (
+        "\n<start>\n"
+        + "\n<end>\n<start>\n".join(
+            [
+                _highlight_activation_record(
+                    activation_record,
+                    cutoff = cutoff,
+                    index = i,
+                )
+                for i, activation_record in enumerate(activation_records)
+            ]
+        )
+        + "\n<end>\n"
+    )
+
+def _highlight_activation_record(
+    activation_record: ActivationRecord,
+    cutoff: float,
+    index: int
+) -> str:
+    """Format neuron activations into a string, suitable for use in prompts."""
+    sample = activation_record
+    out = "{} - Text excerpt:\n".format(index)
+    for i, token in enumerate(sample.tokens):
+        if sample.activations[i] > cutoff:
+            out += "*"+token+"*"
+        else:
+            out += token
+    out += "\n"
+    return out

@@ -12,6 +12,8 @@ from neuron_explainer.activations.activation_records import (
     calculate_max_activation,
     format_activation_records,
     non_zero_activation_proportion,
+    summarize_activation_records,
+    highlight_activation_records
 )
 from neuron_explainer.activations.activations import ActivationRecord
 from neuron_explainer.api_client import ApiClient
@@ -105,7 +107,8 @@ class NeuronExplainer(ABC):
     ) -> list[Any]:
         """Generate explanations based on subclass-specific input data."""
         prompt = self.make_explanation_prompt(max_tokens_for_completion=max_tokens, **prompt_kwargs)
-
+        ###
+        print(prompt)
         generate_kwargs: dict[str, Any] = {
             "n": num_samples,
             "max_tokens": max_tokens,
@@ -470,3 +473,341 @@ class TokenSpaceRepresentationExplainer(NeuronExplainer):
         else:
             # Each element in the top-level list will be an explanation as a string.
             return [_remove_final_period(explanation) for explanation in completions]
+        
+        
+class SummaryExplainer(NeuronExplainer):
+    """
+    Generate explanations of neuron behavior using a prompt with lists of token/activation pairs.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        prompt_format: PromptFormat = PromptFormat.HARMONY_V4,
+        # This parameter lets us adjust the length of the prompt when we're generating explanations
+        # using older models with shorter context windows. In the future we can use it to experiment
+        # with 8k+ context windows.
+        context_size: ContextSize = ContextSize.FOUR_K,
+        few_shot_example_set: FewShotExampleSet = FewShotExampleSet.ORIGINAL,
+        max_concurrent: Optional[int] = 10,
+        cache: bool = False,
+    ):
+        super().__init__(
+            model_name=model_name,
+            prompt_format=prompt_format,
+            max_concurrent=max_concurrent,
+            cache=cache,
+        )
+        self.context_size = context_size
+        self.few_shot_example_set = few_shot_example_set
+
+    def make_explanation_prompt(self, **kwargs: Any) -> Union[str, list[HarmonyMessage]]:
+        original_kwargs = kwargs.copy()
+        all_activation_records: Sequence[ActivationRecord] = kwargs.pop("all_activation_records")
+        cutoff: float = kwargs.pop("cutoff")
+        kwargs.setdefault("numbered_list_of_n_explanations", None)
+        numbered_list_of_n_explanations: Optional[int] = kwargs.pop(
+            "numbered_list_of_n_explanations"
+        )
+        if numbered_list_of_n_explanations is not None:
+            assert numbered_list_of_n_explanations > 0, numbered_list_of_n_explanations
+        # This parameter lets us dynamically shrink the prompt if our initial attempt to create it
+        # results in something that's too long. It's only implemented for the 4k context size.
+        kwargs.setdefault("omit_n_activation_records", 0)
+        omit_n_activation_records: int = kwargs.pop("omit_n_activation_records")
+        max_tokens_for_completion: int = kwargs.pop("max_tokens_for_completion")
+        assert not kwargs, f"Unexpected kwargs: {kwargs}"
+
+        prompt_builder = PromptBuilder()
+        prompt_builder.add_message(
+            Role.SYSTEM,
+            "We're studying neurons in a neural network, and trying to identify their roles."
+            "Look at the parts/tokens of the document the neuron activates for "
+            "and summarize in a single sentence what the neuron is looking for. Don't list "
+            "examples of words.\n\n We will show short text excerpts, and highlight the tokens(part of word):"
+            "that activate highly. Your task is to summarize what these have in common,"
+            "taking the context into account.",
+        )
+        few_shot_examples = self.few_shot_example_set.get_examples()
+        num_omitted_activation_records = 0
+        for i, few_shot_example in enumerate(few_shot_examples):
+            few_shot_activation_records = few_shot_example.activation_records
+            if self.context_size == ContextSize.TWO_K:
+                # If we're using a 2k context window, we only have room for one activation record
+                # per few-shot example. (Two few-shot examples with one activation record each seems
+                # to work better than one few-shot example with two activation records, in local
+                # testing.)
+                few_shot_activation_records = few_shot_activation_records[:1]
+            elif (
+                self.context_size == ContextSize.FOUR_K
+                and num_omitted_activation_records < omit_n_activation_records
+            ):
+                # Drop the last activation record for this few-shot example to save tokens, assuming
+                # there are at least two activation records.
+                if len(few_shot_activation_records) > 1:
+                    print(f"Warning: omitting activation record from few-shot example {i}")
+                    few_shot_activation_records = few_shot_activation_records[:-1]
+                    num_omitted_activation_records += 1
+            self._add_per_neuron_explanation_prompt(
+                prompt_builder,
+                few_shot_activation_records,
+                i,
+                cutoff = 1.0,
+                numbered_list_of_n_explanations=numbered_list_of_n_explanations,
+                explanation=few_shot_example.explanation,
+            )
+        self._add_per_neuron_explanation_prompt(
+            prompt_builder,
+            # If we're using a 2k context window, we only have room for two of the activation
+            # records.
+            all_activation_records[:2]
+            if self.context_size == ContextSize.TWO_K
+            else all_activation_records,
+            i,
+            cutoff,
+            numbered_list_of_n_explanations=numbered_list_of_n_explanations,
+            explanation=None,
+        )
+        # If the prompt is too long *and* we omitted the specified number of activation records, try
+        # again, omitting one more. (If we didn't make the specified number of omissions, we're out
+        # of opportunities to omit records, so we just return the prompt as-is.)
+        if (
+            self._prompt_is_too_long(prompt_builder, max_tokens_for_completion)
+            and num_omitted_activation_records == omit_n_activation_records
+        ):
+            original_kwargs["omit_n_activation_records"] = omit_n_activation_records + 1
+            return self.make_explanation_prompt(**original_kwargs)
+        return prompt_builder.build(self.prompt_format)
+
+    def _add_per_neuron_explanation_prompt(
+        self,
+        prompt_builder: PromptBuilder,
+        activation_records: Sequence[ActivationRecord],
+        index: int,
+        cutoff: float,
+        # When set, this indicates that the prompt should solicit a numbered list of the given
+        # number of explanations, rather than a single explanation.
+        numbered_list_of_n_explanations: Optional[int],
+        explanation: Optional[str],  # None means this is the end of the full prompt.
+    ) -> None:
+        user_message = f"""
+
+Neuron {index + 1}
+Activations:{summarize_activation_records(activation_records, cutoff)}"""
+        # We repeat the non-zero activations only if it was requested and if the proportion of
+        # non-zero activations isn't too high.
+        
+        if numbered_list_of_n_explanations is None:
+            user_message += f"\nExplanation of neuron {index + 1} behavior:"
+            assistant_message = ""
+            # For the IF format, we want <|endofprompt|> to come before the explanation prefix.
+            if self.prompt_format == PromptFormat.INSTRUCTION_FOLLOWING:
+                assistant_message += f" {EXPLANATION_PREFIX}"
+            else:
+                user_message += f" {EXPLANATION_PREFIX}"
+            prompt_builder.add_message(Role.USER, user_message)
+
+            if explanation is not None:
+                assistant_message += f" {explanation}."
+            if assistant_message:
+                prompt_builder.add_message(Role.ASSISTANT, assistant_message)
+        else:
+            if explanation is None:
+                # For the final neuron, we solicit a numbered list of explanations.
+                prompt_builder.add_message(
+                    Role.USER,
+                    f"""\nHere are {numbered_list_of_n_explanations} possible explanations for neuron {index + 1} behavior, each beginning with "{EXPLANATION_PREFIX}":\n1. {EXPLANATION_PREFIX}""",
+                )
+            else:
+                # For the few-shot examples, we only present one explanation, but we present it as a
+                # numbered list.
+                prompt_builder.add_message(
+                    Role.USER,
+                    f"""\nHere is 1 possible explanation for neuron {index + 1} behavior, beginning with "{EXPLANATION_PREFIX}":\n1. {EXPLANATION_PREFIX}""",
+                )
+                prompt_builder.add_message(Role.ASSISTANT, f" {explanation}.")
+
+    def postprocess_explanations(
+        self, completions: list[str], prompt_kwargs: dict[str, Any]
+    ) -> list[Any]:
+        """Postprocess the explanations returned by the API"""
+        numbered_list_of_n_explanations = prompt_kwargs.get("numbered_list_of_n_explanations")
+        if numbered_list_of_n_explanations is None:
+            return completions
+        else:
+            all_explanations = []
+            for completion in completions:
+                for explanation in _split_numbered_list(completion):
+                    if explanation.startswith(EXPLANATION_PREFIX):
+                        explanation = explanation[len(EXPLANATION_PREFIX) :]
+                    all_explanations.append(explanation.strip())
+            return all_explanations
+        
+        
+class HighlightExplainer(NeuronExplainer):
+    """
+    Generate explanations of neuron behavior using a prompt with lists of token/activation pairs.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        prompt_format: PromptFormat = PromptFormat.HARMONY_V4,
+        # This parameter lets us adjust the length of the prompt when we're generating explanations
+        # using older models with shorter context windows. In the future we can use it to experiment
+        # with 8k+ context windows.
+        context_size: ContextSize = ContextSize.FOUR_K,
+        few_shot_example_set: FewShotExampleSet = FewShotExampleSet.ORIGINAL,
+        max_concurrent: Optional[int] = 10,
+        cache: bool = False,
+    ):
+        super().__init__(
+            model_name=model_name,
+            prompt_format=prompt_format,
+            max_concurrent=max_concurrent,
+            cache=cache,
+        )
+        self.context_size = context_size
+        self.few_shot_example_set = few_shot_example_set
+
+    def make_explanation_prompt(self, **kwargs: Any) -> Union[str, list[HarmonyMessage]]:
+        original_kwargs = kwargs.copy()
+        all_activation_records: Sequence[ActivationRecord] = kwargs.pop("all_activation_records")
+        cutoff: float = kwargs.pop("cutoff")
+        kwargs.setdefault("numbered_list_of_n_explanations", None)
+        numbered_list_of_n_explanations: Optional[int] = kwargs.pop(
+            "numbered_list_of_n_explanations"
+        )
+        if numbered_list_of_n_explanations is not None:
+            assert numbered_list_of_n_explanations > 0, numbered_list_of_n_explanations
+        # This parameter lets us dynamically shrink the prompt if our initial attempt to create it
+        # results in something that's too long. It's only implemented for the 4k context size.
+        kwargs.setdefault("omit_n_activation_records", 0)
+        omit_n_activation_records: int = kwargs.pop("omit_n_activation_records")
+        max_tokens_for_completion: int = kwargs.pop("max_tokens_for_completion")
+        assert not kwargs, f"Unexpected kwargs: {kwargs}"
+
+        prompt_builder = PromptBuilder()
+        prompt_builder.add_message(
+            Role.SYSTEM,
+            "We're studying neurons in a neural network, and trying to identify their roles."
+            "Look at the parts/tokens of the document the neuron activates for "
+            "and summarize in a single sentence what the neuron is looking for. Don't list "
+            "examples of words.\n\n We will show short text excerpts, and highlight the tokens(part of word):"
+            "that activate highly using stars, i.e. *token*. Your task is to summarize what highly activating"
+            " tokens have in common, taking the context into account.",
+        )
+        few_shot_examples = self.few_shot_example_set.get_examples()
+        num_omitted_activation_records = 0
+        for i, few_shot_example in enumerate(few_shot_examples):
+            few_shot_activation_records = few_shot_example.activation_records
+            if self.context_size == ContextSize.TWO_K:
+                # If we're using a 2k context window, we only have room for one activation record
+                # per few-shot example. (Two few-shot examples with one activation record each seems
+                # to work better than one few-shot example with two activation records, in local
+                # testing.)
+                few_shot_activation_records = few_shot_activation_records[:1]
+            elif (
+                self.context_size == ContextSize.FOUR_K
+                and num_omitted_activation_records < omit_n_activation_records
+            ):
+                # Drop the last activation record for this few-shot example to save tokens, assuming
+                # there are at least two activation records.
+                if len(few_shot_activation_records) > 1:
+                    print(f"Warning: omitting activation record from few-shot example {i}")
+                    few_shot_activation_records = few_shot_activation_records[:-1]
+                    num_omitted_activation_records += 1
+            self._add_per_neuron_explanation_prompt(
+                prompt_builder,
+                few_shot_activation_records,
+                i,
+                cutoff = 1.0,
+                numbered_list_of_n_explanations=numbered_list_of_n_explanations,
+                explanation=few_shot_example.explanation,
+            )
+        self._add_per_neuron_explanation_prompt(
+            prompt_builder,
+            # If we're using a 2k context window, we only have room for two of the activation
+            # records.
+            all_activation_records[:2]
+            if self.context_size == ContextSize.TWO_K
+            else all_activation_records,
+            i,
+            cutoff,
+            numbered_list_of_n_explanations=numbered_list_of_n_explanations,
+            explanation=None,
+        )
+        # If the prompt is too long *and* we omitted the specified number of activation records, try
+        # again, omitting one more. (If we didn't make the specified number of omissions, we're out
+        # of opportunities to omit records, so we just return the prompt as-is.)
+        if (
+            self._prompt_is_too_long(prompt_builder, max_tokens_for_completion)
+            and num_omitted_activation_records == omit_n_activation_records
+        ):
+            original_kwargs["omit_n_activation_records"] = omit_n_activation_records + 1
+            return self.make_explanation_prompt(**original_kwargs)
+        return prompt_builder.build(self.prompt_format)
+
+    def _add_per_neuron_explanation_prompt(
+        self,
+        prompt_builder: PromptBuilder,
+        activation_records: Sequence[ActivationRecord],
+        index: int,
+        cutoff: float,
+        # When set, this indicates that the prompt should solicit a numbered list of the given
+        # number of explanations, rather than a single explanation.
+        numbered_list_of_n_explanations: Optional[int],
+        explanation: Optional[str],  # None means this is the end of the full prompt.
+    ) -> None:
+        user_message = f"""
+
+Neuron {index + 1}
+Activations:{highlight_activation_records(activation_records, cutoff)}"""
+        # We repeat the non-zero activations only if it was requested and if the proportion of
+        # non-zero activations isn't too high.
+        
+        if numbered_list_of_n_explanations is None:
+            user_message += f"\nExplanation of neuron {index + 1} behavior:"
+            assistant_message = ""
+            # For the IF format, we want <|endofprompt|> to come before the explanation prefix.
+            if self.prompt_format == PromptFormat.INSTRUCTION_FOLLOWING:
+                assistant_message += f" {EXPLANATION_PREFIX}"
+            else:
+                user_message += f" {EXPLANATION_PREFIX}"
+            prompt_builder.add_message(Role.USER, user_message)
+
+            if explanation is not None:
+                assistant_message += f" {explanation}."
+            if assistant_message:
+                prompt_builder.add_message(Role.ASSISTANT, assistant_message)
+        else:
+            if explanation is None:
+                # For the final neuron, we solicit a numbered list of explanations.
+                prompt_builder.add_message(
+                    Role.USER,
+                    f"""\nHere are {numbered_list_of_n_explanations} possible explanations for neuron {index + 1} behavior, each beginning with "{EXPLANATION_PREFIX}":\n1. {EXPLANATION_PREFIX}""",
+                )
+            else:
+                # For the few-shot examples, we only present one explanation, but we present it as a
+                # numbered list.
+                prompt_builder.add_message(
+                    Role.USER,
+                    f"""\nHere is 1 possible explanation for neuron {index + 1} behavior, beginning with "{EXPLANATION_PREFIX}":\n1. {EXPLANATION_PREFIX}""",
+                )
+                prompt_builder.add_message(Role.ASSISTANT, f" {explanation}.")
+
+    def postprocess_explanations(
+        self, completions: list[str], prompt_kwargs: dict[str, Any]
+    ) -> list[Any]:
+        """Postprocess the explanations returned by the API"""
+        numbered_list_of_n_explanations = prompt_kwargs.get("numbered_list_of_n_explanations")
+        if numbered_list_of_n_explanations is None:
+            return completions
+        else:
+            all_explanations = []
+            for completion in completions:
+                for explanation in _split_numbered_list(completion):
+                    if explanation.startswith(EXPLANATION_PREFIX):
+                        explanation = explanation[len(EXPLANATION_PREFIX) :]
+                    all_explanations.append(explanation.strip())
+            return all_explanations
