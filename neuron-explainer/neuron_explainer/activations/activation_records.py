@@ -5,8 +5,10 @@ from typing import Optional, Sequence
 
 from neuron_explainer.activations.activations import ActivationRecord
 
-UNKNOWN_ACTIVATION_STRING = "unknown"
+import string
+ALPHABET = list(string.ascii_uppercase)
 
+UNKNOWN_ACTIVATION_STRING = "unknown"
 
 def relu(x: float) -> float:
     return max(0.0, x)
@@ -135,10 +137,8 @@ def summarize_activation_records(
     cutoff: float
 ) -> str:
     """Format a list of activation records into a string."""
-    return (
-        "\n<start>\n"
-        + "\n<end>\n<start>\n".join(
-            [
+    return ("\n"+"".join(
+                [
                 _summarize_activation_record(
                     activation_record,
                     cutoff = cutoff,
@@ -147,7 +147,6 @@ def summarize_activation_records(
                 for i, activation_record in enumerate(activation_records)
             ]
         )
-        + "\n<end>\n"
     )
 
 def _summarize_activation_record(
@@ -157,27 +156,27 @@ def _summarize_activation_record(
 ) -> str:
     """Format neuron activations into a string, suitable for use in prompts."""
     sample = activation_record
-    out = ""
-    out += "{} - Text excerpt:\n".format(index)
+    out = "\n Text excerpt - {}:\n".format(ALPHABET[index])
+    out += "<start>"
     out += "".join(sample.tokens)
-    out += "\n"
+    out += "<end> \n\n"
     out += "Highly activating tokens:\n"
     high_tokens = []
     for j, activation in enumerate(sample.activations):
         if activation > cutoff:
             high_tokens.append(sample.tokens[j])
-    out += ", ".join(high_tokens)
-    return out + "\n"
+    
+    out += ','.join(high_tokens)
+    out += "\n"
+    return out
 
 def highlight_activation_records(
     activation_records: Sequence[ActivationRecord],
     cutoff: float
 ) -> str:
     """Format a list of activation records into a string."""
-    return (
-        "\n<start>\n"
-        + "\n<end>\n<start>\n".join(
-            [
+    return ("\n"+"".join(
+                [
                 _highlight_activation_record(
                     activation_record,
                     cutoff = cutoff,
@@ -186,7 +185,6 @@ def highlight_activation_records(
                 for i, activation_record in enumerate(activation_records)
             ]
         )
-        + "\n<end>\n"
     )
 
 def _highlight_activation_record(
@@ -196,11 +194,51 @@ def _highlight_activation_record(
 ) -> str:
     """Format neuron activations into a string, suitable for use in prompts."""
     sample = activation_record
-    out = "{} - Text excerpt:\n".format(index)
+    out = "\n Text excerpt - {}:\n".format(ALPHABET[index])
+    out += "<start>"
     for i, token in enumerate(sample.tokens):
         if sample.activations[i] > cutoff:
-            out += "*"+token+"*"
+            out += "["+token+"]"
         else:
             out += token
+    out += "<end> \n"
+    return out
+
+def highlight_with_summary(
+    activation_records: Sequence[ActivationRecord],
+    cutoff: float
+) -> str:
+    """Format a list of activation records into a string."""
+    return ("\n"+"".join(
+                [
+                _highlight_with_summary(
+                    activation_record,
+                    cutoff = cutoff,
+                    index = i,
+                )
+                for i, activation_record in enumerate(activation_records)
+            ]
+        )
+    )
+
+def _highlight_with_summary(
+    activation_record: ActivationRecord,
+    cutoff: float,
+    index: int
+) -> str:
+    """Format neuron activations into a string, suitable for use in prompts."""
+    sample = activation_record
+    high_tokens = []
+    out = "\n Text excerpt - {}:\n".format(ALPHABET[index])
+    out += "<start>"
+    for i, token in enumerate(sample.tokens):
+        if sample.activations[i] > cutoff:
+            out += "["+token+"]"
+            high_tokens.append(sample.tokens[i])
+        else:
+            out += token
+    out += "<end> \n\n"
+    out += "Highly activating tokens:\n"
+    out += ','.join(high_tokens)
     out += "\n"
     return out
