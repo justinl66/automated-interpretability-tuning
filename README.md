@@ -1,5 +1,27 @@
 # Automated interpretability
 
+
+## Quickstart
+
+1. Setup following the `neuron_explainer/README.md`
+2. Go to `neuron_explainer/demos/generate_and_score_explanation.ipynb` and enter your OpenAI API key
+3. Run `neuron_explainer/demos/generate_and_score_explanation.ipynb`, you can change MODE, to_print and neuron_record variables to look at different methods/neurons.
+4. Compare results with GPT-4 explanations and activations shown in [NeuronViewer](https://openaipublic.blob.core.windows.net/neuron-explainer/neuron-viewer/index.html)
+
+## Changes summary (Tuomas)
+
+1. Implemented new load_neuron method in [activations.py](https://github.com/tuomaso/automated-interpretability-tuning/blob/main/neuron-explainer/neuron_explainer/activations/activations.py) to make the repo work without Azure account.
+
+2. Added 3 new Explainer classes in [explainer.py](https://github.com/tuomaso/automated-interpretability-tuning/blob/main/neuron-explainer/neuron_explainer/explanations/explainer.py) to change the way the explainer model is prompted (SummaryExplainer, HighlightExplainer and HighlightSummaryExplainer)
+    * Also added needed functions for these Explainers in [activation_records.py](https://github.com/tuomaso/automated-interpretability-tuning/blob/main/neuron-explainer/neuron_explainer/activations/activation_records.py)
+    * Added optrion to_print to Explainer to print the generated prompt
+    
+3. Modified notebooks in [demos](https://github.com/tuomaso/automated-interpretability-tuning/tree/main/neuron-explainer/demos) 
+* `generate_and_score_explanation.ipynb` and `explain_puzzles.ipynb` to work with new explainers (and commented out simulation to save on compute)
+* Added `compare_explanation.ipynb` to easily generate explanations with different prompts and compare.
+
+
+
 ## Code and tools
 
 This repository contains code and tools associated with the [Language models can explain neurons in

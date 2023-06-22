@@ -107,13 +107,18 @@ class NeuronExplainer(ABC):
         **prompt_kwargs: Any,
     ) -> list[Any]:
         """Generate explanations based on subclass-specific input data."""
+        
+        to_print = ("to_print" in prompt_kwargs and prompt_kwargs["to_print"]==True)
+        del prompt_kwargs["to_print"]
+        
         prompt = self.make_explanation_prompt(max_tokens_for_completion=max_tokens, **prompt_kwargs)
         ### PRINT THE PROMPT USED FOR DEBUGGING/ANALYSIS
         #
-        # print("Printing explanation prompt")
-        # print("-")
-        # for message in prompt:
-        #     print("{}: {}\n".format(message['role'], message['content']))
+        if to_print:
+            print("Printing explanation prompt")
+            print("-")
+            for message in prompt:
+                print("{}: {}\n".format(message['role'], message['content']))
             
         generate_kwargs: dict[str, Any] = {
             "n": num_samples,
