@@ -17,8 +17,8 @@
     * Added optrion to_print to Explainer to print the generated prompt
     
 3. Modified notebooks in [demos](https://github.com/tuomaso/automated-interpretability-tuning/tree/main/neuron-explainer/demos) 
-* `generate_and_score_explanation.ipynb` and `explain_puzzles.ipynb` to work with new explainers (and commented out simulation to save on compute)
-* Added `compare_explanation.ipynb` to easily generate explanations with different prompts and compare.
+   * `generate_and_score_explanation.ipynb` and `explain_puzzles.ipynb` to work with new explainers (and commented out simulation to save on compute)
+   * Added `compare_explanation.ipynb` to easily generate explanations with different prompts and compare.
 
 
 
