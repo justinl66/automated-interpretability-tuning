@@ -337,6 +337,7 @@ class ExplanationNeuronSimulator(NeuronSimulator):
             assert isinstance(prompt, list)
             assert isinstance(prompt[0], dict)  # Really a HarmonyMessage
             generate_kwargs["messages"] = prompt
+            print(prompt)
         else:
             assert isinstance(prompt, str)
             generate_kwargs["prompt"] = prompt
